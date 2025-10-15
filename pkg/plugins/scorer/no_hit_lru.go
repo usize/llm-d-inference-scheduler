@@ -118,20 +118,27 @@ func (s *NoHitLRU) WithName(name string) *NoHitLRU {
 
 // isColdRequest determines if a request is cold by reading the prefix cache state.
 // Returns true if no prefix cache hits were found, or if prefix cache state is unavailable.
+// Supports both standard prefix-cache-scorer and precise-prefix-cache-scorer.
 func (s *NoHitLRU) isColdRequest(ctx context.Context, cycleState *types.CycleState) bool {
 	logger := log.FromContext(ctx).V(logutil.DEBUG)
 
-	// Read prefix cache state to determine if this is a cold request
-	// This is treated as an optimization - if the state isn't available, we assume cold request
-	prefixState, err := types.ReadCycleStateKey[*prefix.SchedulingContextState](cycleState, plugins.StateKey(s.prefixPluginName))
-
-	if err != nil {
-		logger.Info("No prefix cache state found, treating as cold request for LRU optimization", "error", err)
-		return true
+	// Try reading standard prefix-cache-scorer state
+	if prefixState, err := types.ReadCycleStateKey[*prefix.SchedulingContextState](cycleState, plugins.StateKey(s.prefixPluginName)); err == nil {
+		isCold := len(prefixState.PrefixCacheServers) == 0
+		logger.Info("Read standard prefix-cache-scorer state", "isCold", isCold)
+		return isCold
 	}
 
-	// Check if this is a cold request (no prefix cache hits)
-	return len(prefixState.PrefixCacheServers) == 0
+	// Try reading precise-prefix-cache-scorer state
+	if preciseState, err := types.ReadCycleStateKey[*PrecisePrefixCacheState](cycleState, plugins.StateKey(s.prefixPluginName)); err == nil {
+		isCold := !preciseState.HasCacheHits
+		logger.Info("Read precise-prefix-cache-scorer state", "isCold", isCold)
+		return isCold
+	}
+
+	// No state found - default to cold request for LRU optimization
+	logger.Info("No prefix cache state found, treating as cold request for LRU optimization")
+	return true
 }
 
 // scoreNeutral returns neutral scores (0.5) for all pods.

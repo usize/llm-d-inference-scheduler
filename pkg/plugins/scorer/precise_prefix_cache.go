@@ -20,6 +20,20 @@ const (
 	PrecisePrefixCachePluginType = "precise-prefix-cache-scorer"
 )
 
+// PrecisePrefixCacheState stores information about cache hits for a request.
+// This state is stored in the CycleState and can be read by other plugins
+// (e.g., NoHitLRUScorer) to determine if a request had any cache hits.
+type PrecisePrefixCacheState struct {
+	// HasCacheHits indicates whether any pods had cache hits for this request.
+	// If true, at least one pod had a score > 0.
+	HasCacheHits bool
+}
+
+// Clone implements the plugins.StateData interface
+func (s *PrecisePrefixCacheState) Clone() plugins.StateData {
+	return &PrecisePrefixCacheState{HasCacheHits: s.HasCacheHits}
+}
+
 // PrecisePrefixCachePluginConfig holds the configuration for the
 // PrecisePrefixCacheScorer plugin.
 type PrecisePrefixCachePluginConfig struct {
@@ -114,7 +128,8 @@ func (s *PrecisePrefixCacheScorer) WithName(name string) *PrecisePrefixCacheScor
 
 // Score scores the provided pod based on the KVCache index state.
 // The returned scores are normalized to a range of 0-1.
-func (s *PrecisePrefixCacheScorer) Score(ctx context.Context, _ *types.CycleState, request *types.LLMRequest, pods []types.Pod) map[types.Pod]float64 {
+// This method also stores state in CycleState indicating whether any cache hits were found.
+func (s *PrecisePrefixCacheScorer) Score(ctx context.Context, cycleState *types.CycleState, request *types.LLMRequest, pods []types.Pod) map[types.Pod]float64 {
 	loggerDebug := log.FromContext(ctx).WithName(s.typedName.String()).V(logutil.DEBUG)
 	if request == nil {
 		loggerDebug.Info("Request is nil, skipping scoring")
@@ -127,6 +142,16 @@ func (s *PrecisePrefixCacheScorer) Score(ctx context.Context, _ *types.CycleStat
 		return nil
 	}
 	loggerDebug.Info("Got pod scores", "scores", scores)
+
+	// Determine if there were any cache hits by checking if any pod has score > 0
+	_, maxScore := getMinMax(scores)
+	hasCacheHits := maxScore > 0
+
+	// Store state for other plugins (e.g., NoHitLRUScorer) to read
+	state := &PrecisePrefixCacheState{HasCacheHits: hasCacheHits}
+	cycleState.Write(plugins.StateKey(s.typedName.String()), state)
+
+	loggerDebug.Info("Stored cache hit state", "hasCacheHits", hasCacheHits, "maxScore", maxScore)
 
 	podToKey := func(pod types.Pod) (string, bool) {
 		metricsPod := pod.GetPod()

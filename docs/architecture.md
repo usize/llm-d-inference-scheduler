@@ -383,7 +383,7 @@ a cold request, not when they serve requests with cache hits.
   - `prefixPluginName` (optional): The name of the prefix cache plugin to read state from. Defaults to `prefix-cache-scorer`.
   - `lruSize` (optional): The maximum number of pods to track in the LRU cache. Defaults to 1024.
 
-Example configuration:
+Example configuration with `prefix-cache-scorer`:
 
 ```yaml
 plugins:
@@ -394,6 +394,7 @@ plugins:
       lruCapacityPerServer: 31250
   - type: no-hit-lru-scorer
     parameters:
+      prefixPluginName: prefix-cache-scorer
       lruSize: 2048
   - type: decode-filter
   - type: max-score-picker
@@ -409,9 +410,40 @@ schedulingProfiles:
         weight: 1
 ```
 
-**Note:** This scorer is designed to work alongside a prefix cache scorer (such as `prefix-cache-scorer` or
-`precise-prefix-cache-scorer`). If no prefix cache state is available, all requests are treated as cold.
-When integrating with a prefix-cache scorer, the prefix-cache scorer should be defined first in the scheduling profile.
+Example configuration with `precise-prefix-cache-scorer`:
+
+```yaml
+plugins:
+  - name: precise-cache
+    type: precise-prefix-cache-scorer
+    parameters:
+      indexerConfig:
+        tokenProcessorConfig:
+          blockSize: 64
+          hashSeed: "12345"
+  - type: no-hit-lru-scorer
+    parameters:
+      prefixPluginName: precise-cache
+      lruSize: 2048
+  - type: decode-filter
+  - type: max-score-picker
+  - type: single-profile-handler
+schedulingProfiles:
+  - name: default
+    plugins:
+      - pluginRef: decode-filter
+      - pluginRef: max-score-picker
+      - pluginRef: precise-cache
+        weight: 2
+      - pluginRef: no-hit-lru-scorer
+        weight: 1
+```
+
+**Note:** This scorer works alongside a prefix cache scorer (either `prefix-cache-scorer` or
+`precise-prefix-cache-scorer`). The scorer automatically detects which type of prefix cache scorer
+is in use and reads the appropriate state. If no prefix cache state is available, all requests are
+treated as cold. When integrating with a prefix-cache scorer, the prefix-cache scorer should be
+defined first in the scheduling profile.
 
 ---
 

@@ -388,6 +388,78 @@ func TestNoHitLRUPreferLeastRecentlyUsedAfterColdRequests(t *testing.T) {
 	})
 }
 
+func TestNoHitLRUWithPrecisePrefixCacheScorer(t *testing.T) {
+	ctx := context.Background()
+	params := &scorer.NoHitLRUParameters{
+		PrefixPluginName: scorer.PrecisePrefixCachePluginType,
+		LRUSize:          1024,
+	}
+	lruScorer := scorer.NewNoHitLRU(ctx, params)
+
+	podA := &types.PodMetrics{
+		Pod:          &backend.Pod{NamespacedName: k8stypes.NamespacedName{Name: "pod-a"}},
+		MetricsState: &backendmetrics.MetricsState{},
+	}
+	podB := &types.PodMetrics{
+		Pod:          &backend.Pod{NamespacedName: k8stypes.NamespacedName{Name: "pod-b"}},
+		MetricsState: &backendmetrics.MetricsState{},
+	}
+	podC := &types.PodMetrics{
+		Pod:          &backend.Pod{NamespacedName: k8stypes.NamespacedName{Name: "pod-c"}},
+		MetricsState: &backendmetrics.MetricsState{},
+	}
+	pods := []types.Pod{podA, podB, podC}
+
+	t.Run("cold request with precise-prefix-cache-scorer", func(t *testing.T) {
+		cycleState := &types.CycleState{}
+		// PrecisePrefixCacheState with no cache hits
+		preciseState := &scorer.PrecisePrefixCacheState{HasCacheHits: false}
+		cycleState.Write(plugins.StateKey(scorer.PrecisePrefixCachePluginType), preciseState)
+
+		scores := lruScorer.Score(ctx, cycleState, &types.LLMRequest{}, pods)
+
+		// Should score as cold request with LRU distribution
+		if scores[podA] != 1.0 {
+			t.Errorf("Expected podA to get score 1.0 for cold request, got %f", scores[podA])
+		}
+		if scores[podB] != 0.5 {
+			t.Errorf("Expected podB to get score 0.5 for cold request, got %f", scores[podB])
+		}
+		if scores[podC] != 0.0 {
+			t.Errorf("Expected podC to get score 0.0 for cold request, got %f", scores[podC])
+		}
+	})
+
+	t.Run("warm request with precise-prefix-cache-scorer", func(t *testing.T) {
+		cycleState := &types.CycleState{}
+		// PrecisePrefixCacheState with cache hits
+		preciseState := &scorer.PrecisePrefixCacheState{HasCacheHits: true}
+		cycleState.Write(plugins.StateKey(scorer.PrecisePrefixCachePluginType), preciseState)
+
+		scores := lruScorer.Score(ctx, cycleState, &types.LLMRequest{}, pods)
+
+		// Should return neutral scores (0.5) for all pods
+		for pod, score := range scores {
+			if score != 0.5 {
+				t.Errorf("Expected neutral score 0.5 for pod %s with cache hits, got %f",
+					pod.GetPod().NamespacedName.String(), score)
+			}
+		}
+	})
+
+	t.Run("fallback to cold when no state available", func(t *testing.T) {
+		cycleState := &types.CycleState{}
+		// No state written - should default to cold
+
+		scores := lruScorer.Score(ctx, cycleState, &types.LLMRequest{}, pods)
+
+		// Should treat as cold request and use LRU distribution
+		if scores[podA] != 1.0 {
+			t.Errorf("Expected podA to get score 1.0 when no state available, got %f", scores[podA])
+		}
+	})
+}
+
 func TestNoHitLRUEdgeCases(t *testing.T) {
 	ctx := context.Background()
 	scorer := scorer.NewNoHitLRU(ctx, nil)
